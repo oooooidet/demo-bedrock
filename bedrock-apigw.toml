@@ -1,0 +1,12 @@
+version = 0.1
+
+[default.global.parameters]
+region = "ap-northeast-1"
+
+[default.deploy.parameters]
+stack_name = "demo-bedrock-apigw"
+template_file = "bedrock-apigw.yaml"
+resolve_s3 = true
+s3_prefix = "demo-bedrock-apigw"
+capabilities = "CAPABILITY_IAM"
+image_repositories = []

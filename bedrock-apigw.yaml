@@ -1,0 +1,112 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+
+Resources:
+  BedrockFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Ref AWS::StackName
+      Runtime: python3.12
+      Handler: index.handler
+      InlineCode: |
+        import json
+        import boto3
+        
+        bedrock_runtime = boto3.client('bedrock-runtime')
+        modelId = "jp.amazon.nova-2-lite-v1:0"
+        
+        def handler(event, context):
+            params = event.get('queryStringParameters') or {}
+            text = params.get('text', 'こんにちは')
+            
+            response = bedrock_runtime.converse(
+                modelId=modelId,
+                messages = [{
+                  "role": "user",
+                  "content": [{"text": text}],
+                }],
+                inferenceConfig = {
+                  "maxTokens": 2048,
+                  "temperature": 0
+                }
+            )
+            
+            return {
+                'statusCode': 200,
+                'body': response["output"]["message"]["content"][0]["text"]
+            }
+      Policies:
+        - Statement:
+          - Effect: Allow
+            Action: 
+              - bedrock:InvokeModel
+              - bedrock:InvokeModelWithResponseStream
+            Resource: '*'
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /invoke
+            Method: get
+
+  BedrockStreamFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-stream'
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 30
+      InlineCode: |
+        import json
+        import boto3
+        
+        bedrock_runtime = boto3.client('bedrock-runtime')
+        modelId = "jp.amazon.nova-2-lite-v1:0"
+        
+        def handler(event, context):
+            params = event.get('queryStringParameters') or {}
+            text = params.get('text', 'こんにちは')
+            
+            response = bedrock_runtime.converse_stream(
+                modelId=modelId,
+                messages = [{
+                  "role": "user",
+                  "content": [{"text": text}],
+                }],
+                inferenceConfig = {
+                  "maxTokens": 2048,
+                  "temperature": 0
+                }
+            )
+            
+            result = ""
+            for event in response['stream']:
+                if 'contentBlockDelta' in event:
+                    result += event['contentBlockDelta']['delta']['text']
+            
+            return {
+                'statusCode': 200,
+                'body': result
+            }
+      Policies:
+        - Statement:
+          - Effect: Allow
+            Action: 
+              - bedrock:InvokeModel
+              - bedrock:InvokeModelWithResponseStream
+            Resource: '*'
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /stream
+            Method: get
+
+Outputs:
+  InvokeUrl:
+    Description: "Converse API URL"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/invoke?text=Hello"
+  
+  StreamUrl:
+    Description: "Converse Stream API URL"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/stream?text=Hello"
