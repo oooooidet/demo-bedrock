@@ -46,48 +46,54 @@ Resources:
         Api:
           Type: Api
           Properties:
-            Path: /invoke
+            Path: /converse
             Method: get
 
   BedrockStreamFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub '${AWS::StackName}-stream'
-      Runtime: python3.12
+      Runtime: nodejs20.x
       Handler: index.handler
       Timeout: 30
       InlineCode: |
-        import json
-        import boto3
+        const { BedrockRuntimeClient, ConverseStreamCommand } = require("@aws-sdk/client-bedrock-runtime");
         
-        bedrock_runtime = boto3.client('bedrock-runtime')
-        modelId = "jp.amazon.nova-2-lite-v1:0"
+        const client = new BedrockRuntimeClient();
+        const modelId = "jp.amazon.nova-2-lite-v1:0";
         
-        def handler(event, context):
-            params = event.get('queryStringParameters') or {}
-            text = params.get('text', 'こんにちは')
-            
-            response = bedrock_runtime.converse_stream(
-                modelId=modelId,
-                messages = [{
-                  "role": "user",
-                  "content": [{"text": text}],
-                }],
-                inferenceConfig = {
-                  "maxTokens": 2048,
-                  "temperature": 0
-                }
-            )
-            
-            result = ""
-            for event in response['stream']:
-                if 'contentBlockDelta' in event:
-                    result += event['contentBlockDelta']['delta']['text']
-            
-            return {
-                'statusCode': 200,
-                'body': result
+        exports.handler = awslambda.streamifyResponse(async (event, responseStream) => {
+          const metadata = {
+            statusCode: 200,
+            headers: {
+              "Content-Type": "text/plain; charset=utf-8"
             }
+          };
+          
+          responseStream = awslambda.HttpResponseStream.from(responseStream, metadata);
+          
+          try {
+            const text = event.queryStringParameters?.text || "こんにちは";
+            
+            const command = new ConverseStreamCommand({
+              modelId,
+              messages: [{ role: "user", content: [{ text }] }],
+              inferenceConfig: { maxTokens: 2048, temperature: 0 }
+            });
+            
+            const response = await client.send(command);
+            
+            for await (const chunk of response.stream) {
+              if (chunk.contentBlockDelta?.delta?.text) {
+                responseStream.write(chunk.contentBlockDelta.delta.text);
+              }
+            }
+          } catch (error) {
+            responseStream.write(`Error: ${error.message}`);
+          }
+          
+          responseStream.end();
+        });
       Policies:
         - Statement:
           - Effect: Allow
@@ -95,17 +101,49 @@ Resources:
               - bedrock:InvokeModel
               - bedrock:InvokeModelWithResponseStream
             Resource: '*'
-      Events:
-        Api:
-          Type: Api
-          Properties:
-            Path: /stream
-            Method: get
+
+  StreamResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ServerlessRestApi
+      ParentId: !GetAtt ServerlessRestApi.RootResourceId
+      PathPart: stream
+
+  StreamMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ServerlessRestApi
+      ResourceId: !Ref StreamResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2021-11-15/functions/${BedrockStreamFunction.Arn}/response-streaming-invocations'
+        IntegrationResponses:
+          - StatusCode: 200
+        ResponseTransferMode: STREAM
+
+  StreamPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref BedrockStreamFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ServerlessRestApi}/*/*'
+
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - StreamMethod
+    Properties:
+      RestApiId: !Ref ServerlessRestApi
+      StageName: Prod
 
 Outputs:
   InvokeUrl:
     Description: "Converse API URL"
-    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/invoke?text=Hello"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/converse?text=Hello"
   
   StreamUrl:
     Description: "Converse Stream API URL"
